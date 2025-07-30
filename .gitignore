@@ -1,0 +1,19 @@
+# Python virtual environment
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Log files
+*.log
+
+# Data files
+dog_data/
+
+# Sensitive info
+prompt.txt
+
+# IDE settings
+.vscode/ 
