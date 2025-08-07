@@ -45,68 +45,70 @@ class SecondeChanceMixin:
                 break
         return all_dogs
 
-    def scrape_dogs_page_filtered(self, url: str) -> Tuple[List[Dict], Optional[BeautifulSoup]]:
+    def scrape_dogs_page_filtered(
+        self, url: str
+    ) -> Tuple[List[Dict], Optional[BeautifulSoup]]:
         soup = self.get_page(url)
         if not soup:
             return [], None
         dogs: List[Dict] = []
         dog_links: List[str] = []
         all_links = soup.find_all("a", href=True)
+        skip_tokens = [
+            "adopter-un-chien",
+            "adopter-un-chat",
+            "ils-ont-ete-adoptes",
+            "perles-noires",
+            "seniors-en-or",
+            "pourquoi-pas-moi",
+            "urgences",
+            "coup-de-coeur",
+            "voir-plus",
+            "exclure",
+        ]
+        indicators = [
+            "mâle",
+            "femelle",
+            "ans",
+            "chien",
+            "chienne",
+            "bouledogue anglais",
+            "carlin",
+            "shih tzu",
+            "cavalier king charles",
+            "bichon havanais",
+            "bichon frisé",
+            "lhasa apso",
+            "boston terrier",
+            "petit brabançon",
+        ]
         for link in all_links:
             href = link.get("href", "")
-            if "/animal/" in href and not any(
-                skip in href
-                for skip in [
-                    "adopter-un-chien",
-                    "adopter-un-chat",
-                    "ils-ont-ete-adoptes",
-                    "perles-noires",
-                    "seniors-en-or",
-                    "pourquoi-pas-moi",
-                    "urgences",
-                    "coup-de-coeur",
-                    "voir-plus",
-                    "exclure",
-                ]
-            ):
-                link_text = link.get_text().strip()
-                if any(
-                    indicator in link_text.lower()
-                    for indicator in [
-                        "mâle",
-                        "femelle",
-                        "ans",
-                        "chien",
-                        "chienne",
-                        "bouledogue anglais",
-                        "carlin",
-                        "shih tzu",
-                        "cavalier king charles",
-                        "bichon havanais",
-                        "bichon frisé",
-                        "lhasa apso",
-                        "boston terrier",
-                        "petit brabançon",
-                    ]
-                ):
-                    if not href.startswith("http"):
-                        href = f"{self.base_url}{href}"
-                    dog_links.append(href)
+            if "/animal/" not in href:
+                continue
+            if any(skip in href for skip in skip_tokens):
+                continue
+            link_text = link.get_text().strip()
+            if not any(ind in link_text.lower() for ind in indicators):
+                continue
+            if not href.startswith("http"):
+                href = f"{self.base_url}{href}"
+            dog_links.append(href)
         self.logger.info(f"Found {len(dog_links)} potential dog pages")
-        if dog_links:
-            for dog_url in dog_links:
-                dog_soup = self.get_page(dog_url)
-                if dog_soup:
-                    title = dog_soup.find("title")
-                    name = title.get_text().strip() if title else "Unknown"
-                    content = dog_soup.get_text()
-                    dog_info = {
-                        "name": name.split("-")[0].strip() if "-" in name else name,
-                        "full_description": content,
-                        "detail_url": dog_url,
-                    }
-                    if dog_info["name"]:
-                        dogs.append(dog_info)
+        for dog_url in dog_links:
+            dog_soup = self.get_page(dog_url)
+            if not dog_soup:
+                continue
+            title = dog_soup.find("title")
+            name = title.get_text().strip() if title else "Unknown"
+            content = dog_soup.get_text()
+            dog_info = {
+                "name": name.split("-")[0].strip() if "-" in name else name,
+                "full_description": content,
+                "detail_url": dog_url,
+            }
+            if dog_info["name"]:
+                dogs.append(dog_info)
         if not dogs:
             elements = soup.select("div.p-6.w-full")
             if elements:
@@ -137,5 +139,3 @@ class SecondeChanceMixin:
                             href = urljoin(base_url, href)
                         pagination_urls.append(href)
         return pagination_urls
-
-

@@ -26,7 +26,7 @@ class LarcheDeKalaMixin:
                         all_dogs.append(dog_info)
                 except json.JSONDecodeError:
                     self.logger.warning(
-                        f"Warning: Could not decode JSON for a product on larchedekala.fr."
+                        "Warning: Could not decode JSON for a product on larchedekala.fr."
                     )
                     continue
         return all_dogs
@@ -41,27 +41,24 @@ class LarcheDeKalaMixin:
                 "source": "larchedekala.fr",
             }
             detail_soup = self.get_page(dog_info["detail_url"])
-            if detail_soup:
-                name_element = detail_soup.find("h1", class_="product-page__heading")
-                if name_element:
-                    dog_info["name"] = name_element.get_text(strip=True)
-                description_element = detail_soup.find(
-                    "div", class_="product-page__description"
-                )
-                if description_element:
-                    dog_info["full_description"] = description_element.get_text(
-                        separator="\n", strip=True
-                    )
-                else:
-                    dog_info["full_description"] = detail_soup.get_text(
-                        separator="\n", strip=True
-                    )
-            else:
+            if not detail_soup:
                 self.logger.warning(f"Could not fetch detail page for {detail_url}")
                 return None
+            name_element = detail_soup.find("h1", class_="product-page__heading")
+            if name_element:
+                dog_info["name"] = name_element.get_text(strip=True)
+            description_element = detail_soup.find(
+                "div", class_="product-page__description"
+            )
+            if description_element:
+                dog_info["full_description"] = description_element.get_text(
+                    separator="\n", strip=True
+                )
+            else:
+                dog_info["full_description"] = detail_soup.get_text(
+                    separator="\n", strip=True
+                )
             return dog_info
         except Exception as e:
             self.logger.warning(f"Error extracting dog info from larchedekala.fr: {e}")
             return None
-
-

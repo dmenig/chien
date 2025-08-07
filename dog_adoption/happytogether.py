@@ -1,13 +1,8 @@
-import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 class HappyTogetherMixin:
@@ -37,30 +32,8 @@ class HappyTogetherMixin:
         return all_dogs
 
     def get_page_with_selenium(self, url):
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        try:
-            self.logger.info(f"Loading page: {url}")
-            driver.get(url)
-            time.sleep(3)
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            scroll_count = 0
-            while True:
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height or scroll_count > 5:
-                    break
-                last_height = new_height
-                scroll_count += 1
-            time.sleep(2)
-            return driver.page_source
-        finally:
-            driver.quit()
+        # Delegate to CoreMixin centralized selenium renderer
+        return self.get_page_with_selenium(url)
 
     def get_forum_topics_happytogether(self, forum_url):
         try:
@@ -181,5 +154,3 @@ class HappyTogetherMixin:
         elif "grand" in description_lower:
             return "Grand"
         return ""
-
-

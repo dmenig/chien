@@ -114,36 +114,47 @@ class CoreMixin:
         self, dog_info: Dict, breed_analysis: Optional[str] = None
     ) -> Dict:
         try:
-            import google.generativeai as genai
-
-            api_key = os.environ.get("API_KEY")
-            if not api_key:
-                self.logger.error("API_KEY environment variable not set.")
-                return {"score": 0, "score_details": ["Missing API Key"]}
-
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            prompt = self._generate_gemini_prompt(dog_info, breed_analysis)
-            if not prompt:
-                return {"score": -1, "score_details": ["Prompt generation failed"]}
-            response = model.generate_content(prompt)
-            score_text = response.text.strip()
-            score_match = re.search(r"\d+", score_text)
-            if score_match:
-                score = int(score_match.group())
-            else:
-                self.logger.warning(
-                    f"Could not parse score from Gemini response: {score_text}"
-                )
-                score = 0
-            dog_info["score"] = score
-            dog_info["score_details"] = [f"Gemini Score: {score}/100"]
-            return dog_info
+            result = self._call_gemini_api(dog_info, breed_analysis)
+            return result
         except Exception as e:
             self.logger.error(
                 f"Error scoring dog '{dog_info.get('name')}' with Gemini: {e}"
             )
             return {"score": -1, "score_details": ["Error scoring with Gemini"]}
+
+    def _call_gemini_api(
+        self, dog_info: Dict, breed_analysis: Optional[str] = None
+    ) -> Dict:
+        import google.generativeai as genai
+
+        api_key = os.environ.get("API_KEY")
+        if not api_key:
+            self.logger.error("API_KEY environment variable not set.")
+            return {"score": 0, "score_details": ["Missing API Key"]}
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = self._generate_gemini_prompt(dog_info, breed_analysis)
+        if not prompt:
+            return {"score": -1, "score_details": ["Prompt generation failed"]}
+        response = model.generate_content(prompt)
+        score = self._parse_gemini_score(
+            response.text if hasattr(response, "text") else str(response)
+        )
+        dog_info["score"] = score
+        dog_info["score_details"] = [f"Gemini Score: {score}/100"]
+        return dog_info
+
+    def _parse_gemini_score(self, score_text: str) -> int:
+        score_text = score_text.strip()
+        score_match = re.search(r"\d+", score_text)
+        if score_match:
+            try:
+                return int(score_match.group())
+            except ValueError:
+                return 0
+        self.logger.warning(f"Could not parse score from Gemini response: {score_text}")
+        return 0
 
     def extract_dog_info(self, dog_element) -> Dict:
         dog_info = {
@@ -172,24 +183,10 @@ class CoreMixin:
             if not soup:
                 return ""
             full_desc = ""
-            presentation_section = soup.find("h3", string="Présentation")
-            if presentation_section:
-                next_elem = presentation_section.find_next_sibling()
-                while next_elem and next_elem.name != "h3":
-                    if next_elem.name == "p" or next_elem.name == "div":
-                        text = next_elem.get_text().strip()
-                        if text and len(text) > 10:
-                            full_desc += text + "\n\n"
-                    next_elem = next_elem.find_next_sibling()
-            particularites_section = soup.find("h3", string="Particularités")
-            if particularites_section:
-                next_elem = particularites_section.find_next_sibling()
-                while next_elem and next_elem.name != "h3":
-                    if next_elem.name in ["p", "div", "ul", "li"]:
-                        text = next_elem.get_text().strip()
-                        if text and len(text) > 2:
-                            full_desc += f"PARTICULARITÉ: {text}\n\n"
-                    next_elem = next_elem.find_next_sibling()
+            full_desc += self._extract_section_text(soup, "Présentation")
+            full_desc += self._extract_section_text(
+                soup, "Particularités", prefix="PARTICULARITÉ: "
+            )
             if not full_desc:
                 paragraphs = soup.find_all("p")
                 for p in paragraphs:
@@ -202,6 +199,20 @@ class CoreMixin:
                 f"Error getting full description from {detail_url}: {e}"
             )
             return ""
+
+    def _extract_section_text(self, soup, header_text: str, prefix: str = "") -> str:
+        text_accum = ""
+        section = soup.find("h3", string=header_text)
+        if not section:
+            return text_accum
+        next_elem = section.find_next_sibling()
+        while next_elem and next_elem.name != "h3":
+            if next_elem.name in ["p", "div", "ul", "li"]:
+                txt = next_elem.get_text().strip()
+                if txt and len(txt) > (2 if prefix else 10):
+                    text_accum += f"{prefix}{txt}\n\n"
+            next_elem = next_elem.find_next_sibling()
+        return text_accum
 
     def get_dog_image_url(self, detail_url: str) -> Optional[str]:
         if not detail_url:
@@ -228,26 +239,7 @@ class CoreMixin:
                     image_url = urljoin(detail_url, main_img["src"])
                     self.logger.info(f"Found chiensadonner image: {image_url}")
                     return image_url
-            largest_image = None
-            max_area = 0
-            for img in soup.find_all("img"):
-                src = img.get("src")
-                if (
-                    not src
-                    or "logo" in src.lower()
-                    or "icon" in src.lower()
-                    or ".svg" in src.lower()
-                ):
-                    continue
-                try:
-                    width = int(img.get("width", 0))
-                    height = int(img.get("height", 0))
-                    area = width * height
-                    if area > max_area:
-                        max_area = area
-                        largest_image = src
-                except (ValueError, TypeError):
-                    continue
+            largest_image = self._find_largest_image(soup)
             if largest_image:
                 image_url = urljoin(detail_url, largest_image)
                 self.logger.info(f"Found largest image via fallback: {image_url}")
@@ -257,3 +249,67 @@ class CoreMixin:
         except Exception as e:
             self.logger.warning(f"Error scraping image from {detail_url}: {e}")
             return None
+
+    def _find_largest_image(self, soup):
+        largest_image = None
+        max_area = 0
+        for img in soup.find_all("img"):
+            src = img.get("src")
+            if (
+                not src
+                or "logo" in src.lower()
+                or "icon" in src.lower()
+                or ".svg" in src.lower()
+            ):
+                continue
+            try:
+                width = int(img.get("width", 0))
+                height = int(img.get("height", 0))
+                area = width * height
+                if area > max_area:
+                    max_area = area
+                    largest_image = src
+            except (ValueError, TypeError):
+                continue
+        return largest_image
+
+    def get_page_with_selenium(self, url: str) -> str:
+        """Render a page using Selenium and return page source (keeps previous behavior)."""
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+            import time
+
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            try:
+                self.logger.info(f"Loading page with selenium: {url}")
+                driver.get(url)
+                time.sleep(3)
+                last_height = driver.execute_script("return document.body.scrollHeight")
+                scroll_count = 0
+                while True:
+                    driver.execute_script(
+                        "window.scrollTo(0, document.body.scrollHeight);"
+                    )
+                    time.sleep(2)
+                    new_height = driver.execute_script(
+                        "return document.body.scrollHeight"
+                    )
+                    if new_height == last_height or scroll_count > 10:
+                        break
+                    last_height = new_height
+                    scroll_count += 1
+                time.sleep(2)
+                return driver.page_source
+            finally:
+                driver.quit()
+        except Exception as e:
+            self.logger.error(f"Selenium rendering failed for {url}: {e}")
+            return ""

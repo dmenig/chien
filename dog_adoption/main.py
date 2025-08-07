@@ -1,4 +1,3 @@
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
@@ -43,21 +42,30 @@ class DogAdoptionBot(
                 try:
                     dogs = future.result()
                     all_dogs.extend(dogs)
-                    self.logger.info(f"Found {len(dogs)} dogs from {source}.org")
+                    self.logger.info("Found %d dogs from %s", len(dogs), source)
                 except Exception as exc:
                     self.logger.error(f"{source} generated an exception: {exc}")
-        self.logger.info(f"Total dogs scraped from all sources: {len(all_dogs)}")
+        self.logger.info("Total dogs scraped from all sources: %d", len(all_dogs))
+        unique_dogs = self._deduplicate_dogs(all_dogs)
+        self._score_dogs_concurrently(unique_dogs)
+        unique_dogs.sort(key=lambda x: x.get("score", 0), reverse=True)
+        self.logger.info("Total unique dogs from all sources: %d", len(unique_dogs))
+        return unique_dogs
+
+    def _deduplicate_dogs(self, dogs: List[Dict]) -> List[Dict]:
         unique_dogs: List[Dict] = []
         seen_dogs = set()
-        for dog in all_dogs:
+        for dog in dogs:
             dog_key = (dog.get("name", "").lower(), dog.get("detail_url", ""))
             if dog_key not in seen_dogs:
                 seen_dogs.add(dog_key)
                 unique_dogs.append(dog)
+        return unique_dogs
+
+    def _score_dogs_concurrently(self, dogs: List[Dict]):
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_dog = {
-                executor.submit(self.score_dog_with_gemini, dog): dog
-                for dog in unique_dogs
+                executor.submit(self.score_dog_with_gemini, dog): dog for dog in dogs
             }
             for future in as_completed(future_to_dog):
                 dog = future_to_dog[future]
@@ -70,9 +78,6 @@ class DogAdoptionBot(
                     )
                     dog["score"] = -1
                     dog["score_details"] = ["Scoring failed"]
-        unique_dogs.sort(key=lambda x: x.get("score", 0), reverse=True)
-        self.logger.info(f"Total unique dogs from all sources: {len(unique_dogs)}")
-        return unique_dogs
 
     def start_scheduler(self):
         schedule.every().day.at("09:00").do(self.run_daily_scrape)
@@ -85,8 +90,8 @@ class DogAdoptionBot(
                 dogs.sort(key=lambda x: x.get("score", 0), reverse=True)
             self.save_data(dogs)
             print(f"\n🐕 FOUND {len(dogs)} DOGS IN PARIS REGION")
-            print(f"📊 Ranked by apartment suitability & cat compatibility:")
-            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            print("📊 Ranked by apartment suitability & cat compatibility:")
+            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             excellent_dogs = [dog for dog in dogs if dog.get("score", 0) >= 80]
             if not excellent_dogs:
                 print("\nNo dogs scored 80 or higher in this run.")
@@ -100,10 +105,8 @@ class DogAdoptionBot(
                 if dog.get("image_url"):
                     print(f"   🖼️ Image: {dog['image_url']}")
         else:
-            print(f"\n⚠️  No dogs found")
-            print(
-                f"💡 Try checking the site manually or expand search to other regions"
-            )
+            print("\n⚠️  No dogs found")
+            print("💡 Try checking the site manually or expand search to other regions")
         self.logger.info("Daily scraping job completed")
 
 

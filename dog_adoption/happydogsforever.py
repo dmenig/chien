@@ -1,13 +1,8 @@
-import time
 from datetime import datetime
 from typing import Dict, List, Optional
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 class HappyDogsForeverMixin:
@@ -15,27 +10,11 @@ class HappyDogsForeverMixin:
         self.logger.info("Scraping from happydogsforever.com")
         all_dogs: List[Dict] = []
         url = "https://www.happydogsforever.com/nos-chiens-chats"
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        driver = None
         try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.get(url)
-            time.sleep(5)
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            scroll_count = 0
-            while True:
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height or scroll_count > 10:
-                    break
-                last_height = new_height
-                scroll_count += 1
-            soup = BeautifulSoup(driver.page_source, "lxml")
+            page_src = self.get_page_with_selenium(url)
+            if not page_src:
+                return all_dogs
+            soup = BeautifulSoup(page_src, "lxml")
             category_links: List[str] = []
             category_selectors = [
                 "a[href*='nos-chiens-chats']",
@@ -45,41 +24,27 @@ class HappyDogsForeverMixin:
                 links = soup.select(selector)
                 for link in links:
                     href = link.get("href")
-                    if href:
-                        if href.startswith("http"):
-                            full_url = href
-                        else:
-                            full_url = urljoin("https://www.happydogsforever.com", href)
-                        if (
-                            full_url not in category_links
-                            and "les-chats" not in full_url.lower()
-                            and "ils-sont-adoptes" not in full_url.lower()
-                        ):
-                            category_links.append(full_url)
-                            self.logger.info(f"Found category link: {full_url}")
+                    if not href:
+                        continue
+                    if href.startswith("http"):
+                        full_url = href
+                    else:
+                        full_url = urljoin("https://www.happydogsforever.com", href)
+                    if (
+                        full_url not in category_links
+                        and "les-chats" not in full_url.lower()
+                        and "ils-sont-adoptes" not in full_url.lower()
+                    ):
+                        category_links.append(full_url)
+                        self.logger.info(f"Found category link: {full_url}")
             self.logger.info(f"Found {len(category_links)} category links to follow")
             for category_url in category_links:
                 try:
                     self.logger.info(f"Scraping category: {category_url}")
-                    driver.get(category_url)
-                    time.sleep(3)
-                    cat_last_height = driver.execute_script(
-                        "return document.body.scrollHeight"
-                    )
-                    cat_scroll_count = 0
-                    while True:
-                        driver.execute_script(
-                            "window.scrollTo(0, document.body.scrollHeight);"
-                        )
-                        time.sleep(2)
-                        cat_new_height = driver.execute_script(
-                            "return document.body.scrollHeight"
-                        )
-                        if cat_new_height == cat_last_height or cat_scroll_count > 5:
-                            break
-                        cat_last_height = cat_new_height
-                        cat_scroll_count += 1
-                    category_soup = BeautifulSoup(driver.page_source, "lxml")
+                    page_src = self.get_page_with_selenium(category_url)
+                    if not page_src:
+                        continue
+                    category_soup = BeautifulSoup(page_src, "lxml")
                     dog_selectors = [
                         "[class*='dog'i]",
                         "[class*='pet'i]",
@@ -131,9 +96,6 @@ class HappyDogsForeverMixin:
                     continue
         except Exception as e:
             self.logger.error(f"Error scraping happydogsforever.com: {e}")
-        finally:
-            if driver:
-                driver.quit()
         self.logger.info(f"Scraped {len(all_dogs)} dogs from happydogsforever.com")
         return all_dogs
 
@@ -146,7 +108,6 @@ class HappyDogsForeverMixin:
                 "scraped_date": datetime.now().isoformat(),
                 "source": "happydogsforever.com",
             }
-        
             name_selectors = [
                 "h1",
                 "h2",
@@ -168,7 +129,8 @@ class HappyDogsForeverMixin:
                     if (
                         name_text
                         and len(name_text) > 1
-                        and name_text.lower() not in ["dog", "pet", "animal", "chien", "chat"]
+                        and name_text.lower()
+                        not in ["dog", "pet", "animal", "chien", "chat"]
                     ):
                         dog_info["name"] = name_text
                         break
@@ -206,5 +168,3 @@ class HappyDogsForeverMixin:
                 f"Error extracting dog info from happydogsforever.com: {e}"
             )
             return None
-
-

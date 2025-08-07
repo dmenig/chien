@@ -1,12 +1,7 @@
-import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 class CrocsMignonsMixin:
@@ -14,25 +9,11 @@ class CrocsMignonsMixin:
         self.logger.info("Scraping from latribudescrocsmignons.com")
         all_dogs: List[Dict] = []
         url = "https://www.latribudescrocsmignons.com/a-l-adoption"
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        driver = None
         try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.get(url)
-            time.sleep(5)
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            while True:
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    break
-                last_height = new_height
-            soup = BeautifulSoup(driver.page_source, "lxml")
+            page_src = self.get_page_with_selenium(url)
+            if not page_src:
+                return all_dogs
+            soup = BeautifulSoup(page_src, "lxml")
             links = set()
             for a in soup.find_all("a", href=True):
                 if "single-post" in a["href"]:
@@ -46,9 +27,6 @@ class CrocsMignonsMixin:
                     all_dogs.append(dog_info)
         except Exception as e:
             self.logger.error(f"Error scraping latribudescrocsmignons.com: {e}")
-        finally:
-            if driver:
-                driver.quit()
         return all_dogs
 
     def extract_dog_info_crocsmignons(self, detail_url: str) -> Optional[Dict]:
@@ -79,5 +57,3 @@ class CrocsMignonsMixin:
                 f"Error extracting dog info from latribudescrocsmignons.com: {e}"
             )
             return None
-
-
