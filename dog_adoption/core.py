@@ -62,7 +62,7 @@ class CoreMixin:
             except requests.RequestException as e:
                 self.logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
                 if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                 else:
                     self.logger.error(f"Failed to fetch {url} after {retries} attempts")
                     return None
@@ -92,9 +92,7 @@ class CoreMixin:
             description = description[:1500]
             breed_text = ""
             if breed_analysis:
-                breed_text = (
-                    f"An AI image analysis suggests the following about the breed: '{breed_analysis}'. Please take this into account."
-                )
+                breed_text = f"An AI image analysis suggests the following about the breed: '{breed_analysis}'. Please take this into account."
             return f"""
             Evaluate the dog's suitability for apartment living with a cat based *only* on the text below.
             Description: {description}
@@ -259,5 +257,3 @@ class CoreMixin:
         except Exception as e:
             self.logger.warning(f"Error scraping image from {detail_url}: {e}")
             return None
-
-
