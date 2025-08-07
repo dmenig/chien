@@ -3,16 +3,12 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-import sys
 
 
-def get_full_page_html():
+def get_page_with_selenium(url: str) -> str:
     """
-    Fetches the full HTML of https://www.latribudescrocsmignons.com/a-l-adoption
-    by scrolling to the bottom of the page to load all content.
+    Fetch page content with Selenium for dynamic content.
     """
-    url = "https://www.latribudescrocsmignons.com/a-l-adoption"
-
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -22,28 +18,26 @@ def get_full_page_html():
     driver = webdriver.Chrome(service=service, options=chrome_options)
 
     try:
+        print(f"Loading page: {url}")
         driver.get(url)
-        # Wait for the initial page to load
-        time.sleep(5)
+        # Wait for initial content to load
+        time.sleep(3)
 
-        # Scroll to the bottom of the page to load all dogs
+        # Scroll to load all content
         last_height = driver.execute_script("return document.body.scrollHeight")
+        scroll_count = 0
         while True:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)  # Wait for new content to load
+            time.sleep(2)
             new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
+            if new_height == last_height or scroll_count > 5:
                 break
             last_height = new_height
+            scroll_count += 1
+
+        # Wait a bit more for any remaining content to load
+        time.sleep(2)
 
         return driver.page_source
     finally:
         driver.quit()
-
-
-if __name__ == "__main__":
-    html_content = get_full_page_html()
-    if html_content:
-        print(html_content)
-    else:
-        print("Failed to fetch page content.")

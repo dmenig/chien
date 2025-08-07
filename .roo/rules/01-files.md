@@ -1,0 +1,4 @@
+- No file longer than 300 lines
+- No function longer than 30 lines
+- No dupplicated or redundant code : share code
+- No unused code

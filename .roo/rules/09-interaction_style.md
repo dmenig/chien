@@ -1,0 +1,6 @@
+- Short concise responses
+- Don't announce just do
+- No summary
+- Never apologize
+- Keep logging low
+- Timeouts

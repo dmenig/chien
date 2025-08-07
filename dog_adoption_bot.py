@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import re
 from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode
 import schedule
 import requests
 from bs4 import BeautifulSoup
@@ -18,6 +19,12 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 
+from common.io import save_data
+from common.web import get_page_with_selenium
+from common.gemini import score_dog_with_gemini
+from common import dog_scrapers
+
+
 class DogAdoptionBot:
     def __init__(self, base_url: str = "https://www.secondechance.org"):
         self.base_url = base_url
@@ -28,19 +35,17 @@ class DogAdoptionBot:
             }
         )
         self.setup_logging()
-        self.data_dir = "dog_data"
-        self.ensure_data_directory()
         self.search_regions = ["2", "3", "4", "5"]  # Île-de-France, Nord, Est, Sud-Est
         self.paris_departments = [
-            "41",
-            "42",
-            "43",
-            "44",
-            "45",
-            "46",
-            "47",
-            "48",
-        ]  # 75, 77, 78, 91, 92, 93, 94, 95
+            "75",
+            "77",
+            "78",
+            "91",
+            "92",
+            "93",
+            "94",
+            "95",
+        ]  # Paris departments
 
     def setup_logging(self):
         """Set up logging configuration."""
@@ -51,12 +56,6 @@ class DogAdoptionBot:
             handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
         )
         self.logger = logging.getLogger(__name__)
-
-    def ensure_data_directory(self):
-        """Ensure the data directory exists."""
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
-            self.logger.info(f"Created data directory: {self.data_dir}")
 
     def get_page(self, url: str, retries: int = 3) -> Optional[BeautifulSoup]:
         """Fetch a page with retry logic."""
@@ -78,17 +77,29 @@ class DogAdoptionBot:
 
     def scrape_all_sources(self) -> List[Dict]:
         """Scrape dogs from all configured sources in parallel."""
+        sources = {
+            "secondechance": dog_scrapers.scrape_secondechance,
+            "chiensadonner": dog_scrapers.scrape_chiensadonner,
+            "crocsmignons": dog_scrapers.scrape_crocsmignons,
+            "larchedekala": dog_scrapers.scrape_larchedekala,
+            "rememberme": dog_scrapers.scrape_rememberme,
+            "happydogsforever": dog_scrapers.scrape_happydogsforever,
+            "happytogether": dog_scrapers.scrape_happytogether,
+        }
+        all_dogs = self._execute_scraping_tasks(sources)
+        unique_dogs = self._deduplicate_dogs(all_dogs)
+        scored_dogs = self._score_dogs(unique_dogs)
+        scored_dogs.sort(key=lambda x: x.get("score", 0), reverse=True)
+        self.logger.info(f"Total unique dogs from all sources: {len(scored_dogs)}")
+        return scored_dogs
+
+    def _execute_scraping_tasks(self, sources: Dict) -> List[Dict]:
         all_dogs = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            # Submit scraping tasks
             future_to_source = {
-                executor.submit(self.scrape_secondechance): "secondechance",
-                executor.submit(self.scrape_chiensadonner): "chiensadonner",
-                executor.submit(self.scrape_crocsmignons): "crocsmignons",
-                executor.submit(self.scrape_larchedekala): "larchedekala",
-                executor.submit(self.scrape_rememberme): "rememberme",
+                executor.submit(scraper, self): name
+                for name, scraper in sources.items()
             }
-
             for future in as_completed(future_to_source):
                 source = future_to_source[future]
                 try:
@@ -97,23 +108,21 @@ class DogAdoptionBot:
                     self.logger.info(f"Found {len(dogs)} dogs from {source}.org")
                 except Exception as exc:
                     self.logger.error(f"{source} generated an exception: {exc}")
+        return all_dogs
 
-        # Deduplicate and sort
-        self.logger.info(f"Total dogs scraped from all sources: {len(all_dogs)}")
-        unique_dogs = []
-        seen_dogs = set()
-        for dog in all_dogs:
-            # Using name and detail_url for deduplication
-            dog_key = (dog.get("name", "").lower(), dog.get("detail_url", ""))
-            if dog_key not in seen_dogs:
-                seen_dogs.add(dog_key)
-                unique_dogs.append(dog)
+    def _deduplicate_dogs(self, dogs: List[Dict]) -> List[Dict]:
+        unique_dogs = {}
+        for dog in dogs:
+            # Use a tuple of sorted items for the key to handle dictionaries with the same content but different order
+            key = tuple(sorted(dog.items()))
+            if key not in unique_dogs:
+                unique_dogs[key] = dog
+        return list(unique_dogs.values())
 
-        # Parallel scoring
+    def _score_dogs(self, dogs: List[Dict]) -> List[Dict]:
         with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_dog = {
-                executor.submit(self.score_dog_with_gemini, dog): dog
-                for dog in unique_dogs
+                executor.submit(score_dog_with_gemini, dog): dog for dog in dogs
             }
             for future in as_completed(future_to_dog):
                 dog = future_to_dog[future]
@@ -126,725 +135,266 @@ class DogAdoptionBot:
                     )
                     dog["score"] = -1
                     dog["score_details"] = ["Scoring failed"]
-
-        unique_dogs.sort(key=lambda x: x.get("score", 0), reverse=True)
-
-        self.logger.info(f"Total unique dogs from all sources: {len(unique_dogs)}")
-        return unique_dogs
-
-    def save_data(self, dogs: List[Dict]):
-        """Save scraped data to JSON and CSV files."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # Save as JSON
-        json_filename = f"{self.data_dir}/dogs_{timestamp}.json"
-        with open(json_filename, "w", encoding="utf-8") as f:
-            json.dump(dogs, f, ensure_ascii=False, indent=2)
-
-        # Save as CSV
-        if dogs:
-            csv_filename = f"{self.data_dir}/dogs_{timestamp}.csv"
-            df = pd.DataFrame(dogs)
-            df.to_csv(csv_filename, index=False, encoding="utf-8")
-
-        self.logger.info(
-            f"Data saved to {json_filename} and {csv_filename if dogs else 'CSV not created (no data)'}"
-        )
-
-    def _generate_gemini_prompt(self, dog_info: Dict) -> str:
-        """Generate a detailed prompt for Gemini based on the raw text of a dog listing."""
-        try:
-            with open("prompt.txt", "r", encoding="utf-8") as f:
-                prompt_template = f.read()
-        except FileNotFoundError:
-            self.logger.error("prompt.txt not found. Please create it.")
-            return ""
-
-        raw_text = dog_info.get("full_description", "No description available.")
-        dog_name = dog_info.get("name", "Unknown")
-
-        return prompt_template.format(dog_name=dog_name, raw_text=raw_text)
-
-    def score_dog_with_gemini(self, dog_info: Dict) -> Dict:
-        """Score a dog using the Gemini 1.5 Flash model based on raw text."""
-        try:
-            import google.generativeai as genai
-
-            # Configure the Gemini API key
-            # Make sure to set the API_KEY environment variable
-            api_key = os.environ.get("API_KEY")
-            if not api_key:
-                self.logger.error("API_KEY environment variable not set.")
-                return {"score": 0, "score_details": ["Missing API Key"]}
-
-            genai.configure(api_key=api_key)
-
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            prompt = self._generate_gemini_prompt(dog_info)
-            if not prompt:
-                return {"score": -1, "score_details": ["Prompt generation failed"]}
-
-            response = model.generate_content(prompt)
-
-            # Extract the score from the response
-            score_text = response.text.strip()
-            score_match = re.search(r"\d+", score_text)
-            if score_match:
-                score = int(score_match.group())
-            else:
-                self.logger.warning(
-                    f"Could not parse score from Gemini response: {score_text}"
-                )
-                score = 0
-
-            dog_info["score"] = score
-            dog_info["score_details"] = [f"Gemini Score: {score}/100"]
-            return dog_info
-        except Exception as e:
-            self.logger.error(
-                f"Error scoring dog '{dog_info.get('name')}' with Gemini: {e}"
-            )
-            return {
-                "score": -1,  # Use -1 to indicate an error
-                "score_details": ["Error scoring with Gemini"],
-            }
-
-    def extract_dog_info(self, dog_element) -> Dict:
-        """Extracts the raw text content and basic info for a dog listing."""
-        dog_info = {
-            "name": "Unknown",
-            "detail_url": "",
-            "full_description": "",
-            "scraped_date": datetime.now().isoformat(),
-        }
-        try:
-            name_elem = dog_element.find("h3", class_="pacifico-regular")
-            if name_elem:
-                dog_info["name"] = name_elem.get_text(strip=True)
-
-            detail_link = dog_element.find("a", href=True)
-            if detail_link:
-                dog_info["detail_url"] = urljoin(self.base_url, detail_link["href"])
-
-            # Get the raw text content for Gemini
-            dog_info["full_description"] = dog_element.get_text(
-                separator="\n", strip=True
-            )
-
-        except Exception as e:
-            self.logger.warning(f"Error extracting dog info: {e}")
-
-        return dog_info
-
-    def get_full_description(self, detail_url: str) -> str:
-        """Get full description from dog detail page including Particularités section."""
-        try:
-            soup = self.get_page(detail_url)
-            if not soup:
-                return ""
-
-            full_desc = ""
-
-            # Get main presentation/description
-            presentation_section = soup.find("h3", string="Présentation")
-            if presentation_section:
-                # Get the content after the "Présentation" header
-                next_elem = presentation_section.find_next_sibling()
-                while next_elem and next_elem.name != "h3":
-                    if next_elem.name == "p" or next_elem.name == "div":
-                        text = next_elem.get_text().strip()
-                        if text and len(text) > 10:
-                            full_desc += text + "\n\n"
-                    next_elem = next_elem.find_next_sibling()
-
-            # Get "Particularités" section - CRITICAL for garden requirements
-            particularites_section = soup.find("h3", string="Particularités")
-            if particularites_section:
-                # Get the content after the "Particularités" header
-                next_elem = particularites_section.find_next_sibling()
-                while next_elem and next_elem.name != "h3":
-                    if next_elem.name in ["p", "div", "ul", "li"]:
-                        text = next_elem.get_text().strip()
-                        if text and len(text) > 2:
-                            full_desc += f"PARTICULARITÉ: {text}\n\n"
-                    next_elem = next_elem.find_next_sibling()
-
-            # Look for any other relevant sections
-            if not full_desc:
-                # Fallback: look for paragraphs with substantial text
-                paragraphs = soup.find_all("p")
-                for p in paragraphs:
-                    text = p.get_text().strip()
-                    if len(text) > 50:  # Only include substantial paragraphs
-                        full_desc += text + "\n\n"
-
-            return full_desc.strip()
-
-        except Exception as e:
-            self.logger.warning(
-                f"Error getting full description from {detail_url}: {e}"
-            )
-            return ""
-
-    def build_filtered_url(self, broader_search=False) -> str:
-        """Build URL with filters for big dogs from Paris region or broader search."""
-        base_url = f"{self.base_url}/animal/adopter-un-chien"
-
-        # Parameters for big dogs
-        params = [
-            "species=1",  # Dogs
-        ]
-
-        if broader_search:
-            # Search multiple regions around Paris
-            for region in self.search_regions:
-                params.append(f"regions[]={region}")
-            self.logger.info("Using broader search across multiple regions")
-        else:
-            # Just Paris region
-            params.append("region=2")  # Île-de-France
-
-            # Add Paris region departments
-            for dept in self.paris_departments:
-                params.append(f"departments[]={dept}")
-
-        filtered_url = f"{base_url}?{'&'.join(params)}"
-        self.logger.info(f"Using filtered URL: {filtered_url}")
-        return filtered_url
-
-    def scrape_secondechance(self) -> List[Dict]:
-        """Scrape dogs from secondechance.org Paris region."""
-        all_dogs = []
-
-        # Use the site's filtered URL
-        filtered_url = self.build_filtered_url()
-
-        visited_urls = set()
-        urls_to_visit = [filtered_url]
-
-        while urls_to_visit:
-            current_url = urls_to_visit.pop(0)
-            if current_url in visited_urls:
-                continue
-
-            visited_urls.add(current_url)
-            self.logger.info(f"Scraping from secondechance.org: {current_url}")
-
-            # Scrape dogs from current page
-            dogs, soup = self.scrape_dogs_page_filtered(current_url)
-            if dogs:
-                all_dogs.extend(dogs)
-
-            # Find pagination URLs from the returned soup
-            if soup:
-                pagination_urls = self.find_pagination_urls(soup, current_url)
-                for url in pagination_urls:
-                    if url not in visited_urls:
-                        urls_to_visit.append(url)
-
-            # Limit to reasonable number of pages
-            if len(visited_urls) >= 10:
-                break
-
-        return all_dogs
-
-    def scrape_dogs_page_filtered(self, url: str) -> List[Dict]:
-        """Scrape dogs from a page and score them based on criteria."""
-        soup = self.get_page(url)
-        if not soup:
-            return []
-
-        dogs = []
-
-        # Look for actual dog listings more systematically
-        # First, try to find links to individual dog pages
-        dog_links = []
-        all_links = soup.find_all("a", href=True)
-        for link in all_links:
-            href = link.get("href", "")
-            # Look for links that appear to be individual dog pages
-            if "/animal/" in href and not any(
-                skip in href
-                for skip in [
-                    "adopter-un-chien",
-                    "adopter-un-chat",
-                    "ils-ont-ete-adoptes",
-                    "perles-noires",
-                    "seniors-en-or",
-                    "pourquoi-pas-moi",
-                    "urgences",
-                    "coup-de-coeur",
-                    "voir-plus",
-                    "exclure",
-                ]
-            ):
-                # Check if this looks like a dog listing (contains text with dog info)
-                link_text = link.get_text().strip()
-                if any(
-                    indicator in link_text.lower()
-                    for indicator in [
-                        "mâle",
-                        "femelle",
-                        "ans",
-                        "chien",
-                        "chienne",
-                        "bouledogue anglais",
-                        "carlin",
-                        "shih tzu",
-                        "cavalier king charles",
-                        "bichon havanais",
-                        "bichon frisé",
-                        "lhasa apso",
-                        "boston terrier",
-                        "petit brabançon",
-                    ]
-                ):
-                    if not href.startswith("http"):
-                        href = f"{self.base_url}{href}"
-                    dog_links.append(href)
-
-        self.logger.info(f"Found {len(dog_links)} potential dog pages")
-
-        # If we found dog links, process them
-        if dog_links:
-            for dog_url in dog_links:
-                # Extract basic info from the link page
-                dog_soup = self.get_page(dog_url)
-                if dog_soup:
-                    # Extract dog information from the detail page
-                    title = dog_soup.find("title")
-                    name = title.get_text().strip() if title else "Unknown"
-
-                    # Get all text content to extract info
-                    content = dog_soup.get_text()
-
-                    # Create basic dog info structure
-                    dog_info = {
-                        "name": name.split("-")[0].strip() if "-" in name else name,
-                        "full_description": content,
-                        "detail_url": dog_url,
-                    }
-
-                    # Only process if we have a name for the dog
-                    if dog_info["name"]:
-                        dogs.append(dog_info)
-
-        # Fallback: try the old method if no dogs found
-        if not dogs:
-            # Use the old selector approach
-            elements = soup.select("div.p-6.w-full")
-            if elements:
-                self.logger.info(
-                    f"Found {len(elements)} dog elements with old selector"
-                )
-                for element in elements:
-                    dog_info = self.extract_dog_info(element)
-                    if dog_info["name"]:
-                        if dog_info["detail_url"]:
-                            dog_info["full_description"] = self.get_full_description(
-                                dog_info["detail_url"]
-                            )
-                        dogs.append(dog_info)
-
-        self.logger.info(f"Scraped {len(dogs)} dogs from {url}")
-        return dogs, soup
-
-    def find_pagination_urls(self, soup: BeautifulSoup, base_url: str) -> List[str]:
-        """Find pagination URLs from a page."""
-        pagination_urls = []
-        pagination_divs = soup.select("div.pagination")
-        if pagination_divs:
-            for div in pagination_divs:
-                links = div.select("a")
-                for link in links:
-                    href = link.get("href")
-                    if href and "page" in href and "?" in href:
-                        # Ensure it's a relative URL and not an external link
-                        if not href.startswith("http"):
-                            href = urljoin(base_url, href)
-                        pagination_urls.append(href)
-        return pagination_urls
-
-    def scrape_chiensadonner(self) -> List[Dict]:
-        """Scrape dogs from chiensadonner.com for all Ile-de-France departments."""
-        all_dogs = []
-        base_url = "https://www.chiensadonner.com/"
-        # Department codes for Île-de-France
-        ile_de_france_departments = ["75", "77", "78", "91", "92", "93", "94", "95"]
-
-        for location_code in ile_de_france_departments:
-            # Start with the first page URL for the department
-            current_url = f"{base_url}ads/?s=&location={location_code}&scat=0&lat=0&lng=0&radius=80&st=ad_listing"
-            page_num = 1
-
-            while current_url and page_num <= 5:  # Limit to 5 pages per department
-                self.logger.info(
-                    f"Scraping chiensadonner page {page_num} for department '{location_code}': {current_url}"
-                )
-                soup = self.get_page(current_url)
-                if not soup:
-                    self.logger.info(
-                        f"Stopping pagination for department '{location_code}' due to an error on page {page_num}."
-                    )
-                    break
-
-                dog_elements = soup.select("article.listing-item")
-                if not dog_elements:
-                    if page_num > 1:
-                        self.logger.info(
-                            f"No more dogs found for department '{location_code}' on page {page_num}. Stopping."
-                        )
-                    break
-
-                self.logger.info(
-                    f"Found {len(dog_elements)} potential dogs on page {page_num} for department '{location_code}'"
-                )
-
-                for element in dog_elements:
-                    dog_info = self.extract_dog_info_chiensadonner(element)
-                    if dog_info:
-                        all_dogs.append(dog_info)
-
-                # Find the 'next page' link to handle pagination dynamically
-                next_page_element = soup.select_one("a.next.page-numbers")
-                if next_page_element and next_page_element.get("href"):
-                    current_url = next_page_element["href"]
-                else:
-                    current_url = None  # No more pages
-
-                page_num += 1
-        return all_dogs
-
-    def extract_dog_info_chiensadonner(self, dog_element) -> Optional[Dict]:
-        """Extracts raw text and basic info from a chiensadonner.com listing."""
-        try:
-            dog_info = {
-                "name": "Unknown",
-                "detail_url": "",
-                "full_description": "",
-                "scraped_date": datetime.now().isoformat(),
-                "source": "chiensadonner.com",
-            }
-
-            title_element = dog_element.select_one("h2.entry-title a")
-            if not title_element:
-                return None
-
-            dog_info["name"] = title_element.get_text(strip=True)
-            dog_info["detail_url"] = urljoin(
-                "https://www.chiensadonner.com", title_element.get("href")
-            )
-
-            # Get the full description from the detail page for Gemini
-            if dog_info["detail_url"]:
-                detail_soup = self.get_page(dog_info["detail_url"])
-                if detail_soup:
-                    dog_info["full_description"] = detail_soup.get_text(
-                        separator="\n", strip=True
-                    )
-                else:
-                    self.logger.warning(
-                        f"Could not fetch detail page for {dog_info['name']}"
-                    )
-                    # We can still try to score with the limited info from the listing page
-                    dog_info["full_description"] = dog_element.get_text(
-                        separator="\n", strip=True
-                    )
-
-            return dog_info
-
-        except Exception as e:
-            self.logger.warning(
-                f"Error extracting dog info from chiensadonner.com: {e}"
-            )
-            return None
-
-    def scrape_crocsmignons(self) -> List[Dict]:
-        """Scrape dogs from latribudescrocsmignons.com."""
-        self.logger.info("Scraping from latribudescrocsmignons.com")
-        all_dogs = []
-        url = "https://www.latribudescrocsmignons.com/a-l-adoption"
-
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-
-        driver = None
-        try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-
-            driver.get(url)
-            time.sleep(5)  # Wait for initial page load
-
-            last_height = driver.execute_script("return document.body.scrollHeight")
-            while True:
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(2)
-                new_height = driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    break
-                last_height = new_height
-
-            soup = BeautifulSoup(driver.page_source, "lxml")
-            links = set()
-            for a in soup.find_all("a", href=True):
-                if "single-post" in a["href"]:
-                    links.add(a["href"])
-
-            self.logger.info(
-                f"Found {len(links)} potential dog pages from latribudescrocsmignons.com"
-            )
-
-            for link in links:
-                dog_info = self.extract_dog_info_crocsmignons(link)
-                if dog_info:
-                    all_dogs.append(dog_info)
-
-        except Exception as e:
-            self.logger.error(f"Error scraping latribudescrocsmignons.com: {e}")
-        finally:
-            if driver:
-                driver.quit()
-
-        return all_dogs
-
-    def extract_dog_info_crocsmignons(self, detail_url: str) -> Optional[Dict]:
-        """Extracts raw text and basic info from a latribudescrocsmignons.com listing."""
-        try:
-            dog_info = {
-                "name": "Unknown",
-                "detail_url": detail_url,
-                "full_description": "",
-                "scraped_date": datetime.now().isoformat(),
-                "source": "latribudescrocsmignons.com",
-            }
-
-            detail_soup = self.get_page(dog_info["detail_url"])
-            if detail_soup:
-                title_element = detail_soup.find("title")
-                if title_element:
-                    # Extract name from title, e.g., "Nepita, une petite pépite corse | La Tribu des Crocs Mignons"
-                    dog_info["name"] = (
-                        title_element.get_text(strip=True).split("|")[0].strip()
-                    )
-
-                dog_info["full_description"] = detail_soup.get_text(
-                    separator="\n", strip=True
-                )
-            else:
-                self.logger.warning(f"Could not fetch detail page for {detail_url}")
-                return None
-
-            return dog_info
-
-        except Exception as e:
-            self.logger.warning(
-                f"Error extracting dog info from latribudescrocsmignons.com: {e}"
-            )
-            return None
-
-    def scrape_rememberme(self) -> List[Dict]:
-        """Scrape dogs from remembermefrance.org."""
-        self.logger.info("Scraping from remembermefrance.org")
-        all_dogs = []
-        base_url = "https://remembermefrance.org/pets/?breed=chiot&pets_search%5Bsexe%5D=all&pets_search%5Bou_est_le_chien%5D=En+Roumanie&pets_search%5Burgence%5D=all"
-        page = 1
-
-        while True:
-            self.logger.info(f"Scraping remembermefrance.org page {page}")
-            url = f"{base_url}&_page={page}"
-            if page > 1:
-                url = f"https://remembermefrance.org/pets/page/{page}/?breed=chiot&pets_search%5Bsexe%5D=all&pets_search%5Bou_est_le_chien%5D=En+Roumanie&pets_search%5Burgence%5D=all"
-
-            soup = self.get_page(url)
-            if not soup:
-                break
-
-            dog_articles = soup.find_all("article", class_="pets")
-            if not dog_articles:
-                break
-
-            for article in dog_articles:
-                dog_info = self.extract_dog_info_rememberme(article)
-                if dog_info:
-                    all_dogs.append(dog_info)
-
-            next_link = soup.find("a", class_="next page-numbers")
-            if not next_link:
-                break
-
-            page += 1
-            time.sleep(1)
-
-        return all_dogs
-
-    def extract_dog_info_rememberme(
-        self, article_soup: BeautifulSoup
-    ) -> Optional[Dict]:
-        """Extracts raw text and basic info from a remembermefrance.org listing."""
-        try:
-            link_tag = article_soup.find("a", href=True)
-            if not link_tag:
-                return None
-
-            detail_url = link_tag["href"]
-            name_tag = article_soup.find("h3", class_="pet-title")
-            name = name_tag.get_text(strip=True) if name_tag else "Unknown"
-
-            detail_soup = self.get_page(detail_url)
-            full_description = ""
-            if detail_soup:
-                content_area = detail_soup.find("div", class_="pet-description")
-                if content_area:
-                    full_description = content_area.get_text(
-                        separator="\\n", strip=True
-                    )
-                else:
-                    # Fallback to the whole page text if the specific container is not found
-                    full_description = detail_soup.get_text(separator="\\n", strip=True)
-
-            return {
-                "name": name,
-                "detail_url": detail_url,
-                "full_description": full_description,
-                "scraped_date": datetime.now().isoformat(),
-                "source": "remembermefrance.org",
-            }
-        except Exception as e:
-            self.logger.warning(
-                f"Error extracting dog info from remembermefrance.org: {e}"
-            )
-            return None
-
-    def scrape_larchedekala(self) -> List[Dict]:
-        """Scrape dogs from larchedekala.fr."""
-        self.logger.info("Scraping from larchedekala.fr")
-        all_dogs = []
-        url = "https://www.larchedekala.fr/nos-chiens-a-l-adoption/les-chiots-jusqu-a-1-an"
-
-        soup = self.get_page(url)
-        if not soup:
-            return []
-
-        dog_elements = soup.find_all("div", class_="js-product-container")
-
-        for element in dog_elements:
-            if "data-webshop-product" in element.attrs:
-                product_data = element["data-webshop-product"]
-                try:
-                    dog_info_json = json.loads(product_data)
-                    detail_url = urljoin(
-                        "https://www.larchedekala.fr", dog_info_json.get("url")
-                    )
-
-                    dog_info = self.extract_dog_info_larchedekala(detail_url)
-                    if dog_info:
-                        all_dogs.append(dog_info)
-
-                except json.JSONDecodeError:
-                    self.logger.warning(
-                        f"Warning: Could not decode JSON for a product on larchedekala.fr."
-                    )
-                    continue
-
-        return all_dogs
-
-    def extract_dog_info_larchedekala(self, detail_url: str) -> Optional[Dict]:
-        """Extracts raw text and basic info from a larchedekala.fr listing."""
-        try:
-            dog_info = {
-                "name": "Unknown",
-                "detail_url": detail_url,
-                "full_description": "",
-                "scraped_date": datetime.now().isoformat(),
-                "source": "larchedekala.fr",
-            }
-
-            detail_soup = self.get_page(dog_info["detail_url"])
-            if detail_soup:
-                name_element = detail_soup.find("h1", class_="product-page__heading")
-                if name_element:
-                    dog_info["name"] = name_element.get_text(strip=True)
-
-                description_element = detail_soup.find(
-                    "div", class_="product-page__description"
-                )
-                if description_element:
-                    dog_info["full_description"] = description_element.get_text(
-                        separator="\\n", strip=True
-                    )
-                else:
-                    # Fallback to getting all text if the specific div isn't found
-                    dog_info["full_description"] = detail_soup.get_text(
-                        separator="\\n", strip=True
-                    )
-            else:
-                self.logger.warning(f"Could not fetch detail page for {detail_url}")
-                return None
-
-            return dog_info
-
-        except Exception as e:
-            self.logger.warning(f"Error extracting dog info from larchedekala.fr: {e}")
-            return None
-
-    def start_scheduler(self):
-        """Start the daily scheduler."""
-        schedule.every().day.at("09:00").do(self.run_daily_scrape)
+        return dogs
 
     def run_daily_scrape(self):
         """Run the daily scraping job."""
-        self.logger.info("Starting daily dog scraping job")
-
-        dogs = self.scrape_all_sources()
-
-        if dogs:
-            self.save_data(dogs)
-            print(f"\n🐕 FOUND {len(dogs)} DOGS IN PARIS REGION")
-            print(f"📊 Ranked by apartment suitability & cat compatibility:")
-            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-            for i, dog in enumerate(dogs, 1):
-                score = dog.get("score", 0)
-                name = dog.get("name", "Unknown")
-
-                # Color coding based on score
-                if score >= 80:
-                    score_indicator = "🟢 EXCELLENT"
-                elif score >= 60:
-                    score_indicator = "🟡 GOOD"
-                elif score >= 40:
-                    score_indicator = "🟠 FAIR"
-                else:
-                    score_indicator = "🔴 POOR"
-
-                print(f"\n{i}. {name} - {score_indicator} ({score}/100)")
-                print(f"   Score breakdown: {', '.join(dog.get('score_details', []))}")
-                print(f"   🔗 {dog.get('detail_url', 'No URL')}")
-
-                # Add separator after top 3
-                if i == 3 and len(dogs) > 3:
-                    print(f"   ── Other dogs ──")
+        self.logger.info("Starting daily dog adoption scrape...")
+        all_dogs = self.scrape_all_sources()
+        if all_dogs:
+            save_data(all_dogs, "all_sources")
+            self.logger.info(f"Successfully scraped {len(all_dogs)} dogs.")
         else:
-            print(f"\n⚠️  No dogs found")
-            print(
-                f"💡 Try checking the site manually or expand search to other regions"
+            self.logger.warning("No dogs were scraped in this run.")
+
+    def scrape_dogs_page_filtered(
+        self, url: str
+    ) -> (List[Dict], Optional[BeautifulSoup]):
+        """Scrape a single page of dog listings from secondechance.org."""
+        soup = self.get_page(url)
+        if not soup:
+            return [], None
+
+        dogs = []
+        dog_elements = soup.select("div.card-animal-container")
+        self.logger.info(f"Found {len(dog_elements)} potential dogs on {url}")
+
+        for element in dog_elements:
+            dog_info = self.extract_dog_info_secondechance(element)
+            if dog_info:
+                dogs.append(dog_info)
+        return dogs, soup
+
+    def find_pagination_urls(self, soup: BeautifulSoup, current_url: str) -> List[str]:
+        """Find all pagination links on the page."""
+        urls = []
+        pagination = soup.find("ul", class_="pagination")
+        if pagination:
+            for link in pagination.find_all("a", href=True):
+                page_url = urljoin(current_url, link["href"])
+                if urlparse(page_url).path == urlparse(current_url).path:
+                    urls.append(page_url)
+        return urls
+
+    def extract_dog_info_secondechance(self, element: BeautifulSoup) -> Optional[Dict]:
+        """Extract dog information from a single listing element on secondechance.org."""
+        try:
+            name_element = element.select_one("h3.card-title a")
+            name = name_element.text.strip()
+            detail_url = urljoin(self.base_url, name_element["href"])
+
+            # Extract other details
+            breed = element.select_one("div.card-animal-subtitle").text.strip()
+            sex_age_size = element.select_one("ul.card-animal-list li").text.strip()
+            sex, age, size = [item.strip() for item in sex_age_size.split("/")]
+
+            return {
+                "name": name,
+                "breed": breed,
+                "sex": sex,
+                "age": age,
+                "size": size,
+                "detail_url": detail_url,
+                "source": "secondechance.org",
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog info from element: {e}")
+            return None
+
+    def extract_dog_info_chiensadonner(self, element: BeautifulSoup) -> Optional[Dict]:
+        """Extract dog information from a single listing on chiensadonner.com."""
+        try:
+            title_element = element.select_one("h2.listing-title a")
+            name = title_element.text.strip()
+            detail_url = title_element["href"]
+
+            # Extract other details from the listing
+            location_element = element.select_one(".listing-location a")
+            location = location_element.text.strip() if location_element else "N/A"
+
+            breed_element = element.select_one(".listing-cat a")
+            breed = breed_element.text.strip() if breed_element else "N/A"
+
+            description_element = element.select_one(".listing-content p")
+            description_text = (
+                description_element.text.strip() if description_element else "N/A"
             )
 
-        self.logger.info("Daily scraping job completed")
+            # Use regex to find age if available
+            age_match = re.search(r"(\d+)\s+ans?", description_text, re.IGNORECASE)
+            age = f"{age_match.group(1)} ans" if age_match else "N/A"
+
+            return {
+                "name": name,
+                "breed": breed,
+                "location": location,
+                "age": age,
+                "detail_url": detail_url,
+                "source": "chiensadonner.com",
+                "description": description_text,
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog info from chiensadonner: {e}")
+            return None
+
+    def extract_dog_info_crocsmignons(self, dog_url: str) -> Optional[Dict]:
+        """Extract dog information from a single dog page on latribudescrocsmignons.com."""
+        try:
+            soup = self.get_page(dog_url)
+            if not soup:
+                return None
+
+            name = soup.select_one("h1.elementor-heading-title").text.strip()
+
+            # Extract details from the info table
+            details = {}
+            info_elements = soup.select(
+                "div.elementor-widget-container ul.elementor-icon-list-items li"
+            )
+            for item in info_elements:
+                text = item.text.strip()
+                if ":" in text:
+                    key, value = text.split(":", 1)
+                    details[key.strip().lower()] = value.strip()
+
+            return {
+                "name": name,
+                "age": details.get("âge"),
+                "sex": details.get("sexe"),
+                "breed": details.get("race"),
+                "detail_url": dog_url,
+                "source": "latribudescrocsmignons.com",
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog info from {dog_url}: {e}")
+            return None
+
+    def extract_dog_info_happydogsforever(
+        self, element: BeautifulSoup
+    ) -> Optional[Dict]:
+        """Extract dog information from a single dog section on happydogsforever.com."""
+        try:
+            name_element = element.select_one("h3")
+            if not name_element:
+                return None
+            name = name_element.text.strip()
+
+            # Extract other details
+            paragraphs = element.select("p")
+            description = "\n".join([p.text for p in paragraphs])
+
+            # Placeholder for details not easily available
+            return {
+                "name": name,
+                "description": description,
+                "source": "happydogsforever.com",
+                "detail_url": "https://www.happydogsforever.com/a-l-adoption",  # No individual pages
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(
+                f"Could not extract dog info from happydogsforever element: {e}"
+            )
+            return None
+
+    def extract_dog_info_rememberme(self, element: BeautifulSoup) -> Optional[Dict]:
+        """Extract dog information from a single listing on remembermefrance.org."""
+        try:
+            name = element.select_one(
+                "h3.jet-engine-listing-dynamic-field__content"
+            ).text.strip()
+            detail_url = urljoin(
+                "https://www.remembermefrance.org/", element.find("a")["href"]
+            )
+
+            # Extract other details
+            info_list = element.select("ul.info-chien li")
+            details = {
+                item.find("strong").text.strip(): item.find(
+                    text=True, recursive=False
+                ).strip()
+                for item in info_list
+                if item.find("strong")
+            }
+
+            return {
+                "name": name,
+                "breed": details.get("Race:"),
+                "sex": details.get("Sexe:"),
+                "age": details.get("Âge:"),
+                "detail_url": detail_url,
+                "source": "remembermefrance.org",
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog info from rememberme: {e}")
+            return None
+
+    def extract_dog_info_larchedekala(self, detail_url: str) -> Optional[Dict]:
+        """Extract dog information from a product page on larchedekala.fr."""
+        try:
+            soup = self.get_page(detail_url)
+            if not soup:
+                return None
+
+            name = soup.select_one("h1.title").text.strip()
+            description = soup.select_one("div.description").text.strip()
+
+            return {
+                "name": name,
+                "description": description,
+                "detail_url": detail_url,
+                "source": "larchedekala.fr",
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog info from {detail_url}: {e}")
+            return None
+
+    def get_forum_topics_happytogether(self, forum_url: str) -> List[Dict]:
+        """Get all topics from a forum page on happytogether.forumactif.com."""
+        topics = []
+        soup = self.get_page(forum_url)
+        if not soup:
+            return topics
+
+        topic_rows = soup.select("table.table.forum.topics tbody tr")
+        for row in topic_rows:
+            title_element = row.select_one("a.topictitle")
+            if title_element:
+                topics.append(
+                    {
+                        "title": title_element.text.strip(),
+                        "url": urljoin(
+                            "https://happytogether.forumactif.com/",
+                            title_element["href"],
+                        ),
+                    }
+                )
+        return topics
+
+    def get_topic_details_happytogether(self, topic_url: str) -> Optional[Dict]:
+        """Get dog details from a topic page on happytogether.forumactif.com."""
+        try:
+            soup = self.get_page(topic_url)
+            if not soup:
+                return None
+
+            post_content = soup.select_one("div.post.post-content")
+            name = soup.select_one("h1 a").text.strip()
+
+            return {
+                "name": name,
+                "description": post_content.text.strip(),
+                "detail_url": topic_url,
+                "source": "happytogether.forumactif.com",
+            }
+        except (AttributeError, IndexError) as e:
+            self.logger.warning(f"Could not extract dog details from {topic_url}: {e}")
+            return None
 
 
 def main():
-    """Main function to run the bot."""
+    """Main function to run the dog adoption bot."""
     bot = DogAdoptionBot()
-
-    # Run once immediately for testing
     bot.run_daily_scrape()
-
-    # Uncomment to start daily scheduler
-    # bot.start_scheduler()
 
 
 if __name__ == "__main__":
