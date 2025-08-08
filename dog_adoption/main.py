@@ -14,6 +14,8 @@ try:  # Package context
     from .rememberme import RememberMeMixin
     from .larchedekala import LarcheDeKalaMixin
     from .happytogether import HappyTogetherMixin
+    from .brigitte_bardot import BrigitteBardotMixin
+    from .reseau_adoption import ReseauAdoptionMixin
 except ImportError:  # Direct script context
     import os
     import sys
@@ -27,6 +29,8 @@ except ImportError:  # Direct script context
     from rememberme import RememberMeMixin
     from larchedekala import LarcheDeKalaMixin
     from happytogether import HappyTogetherMixin
+    from brigitte_bardot import BrigitteBardotMixin
+    from reseau_adoption import ReseauAdoptionMixin
 
 
 class DogAdoptionBot(
@@ -38,6 +42,8 @@ class DogAdoptionBot(
     RememberMeMixin,
     HappyDogsForeverMixin,
     HappyTogetherMixin,
+    BrigitteBardotMixin,
+    ReseauAdoptionMixin,
 ):
     def __init__(self, base_url: str = "https://www.secondechance.org"):
         CoreMixin.__init__(self, base_url=base_url)
@@ -53,6 +59,8 @@ class DogAdoptionBot(
                 executor.submit(self.scrape_rememberme): "rememberme",
                 executor.submit(self.scrape_happydogsforever): "happydogsforever",
                 executor.submit(self.scrape_happytogether): "happytogether",
+                executor.submit(self.scrape_brigitte_bardot): "brigitte_bardot",
+                executor.submit(self.scrape_reseauadoption): "reseauadoption",
             }
             for future in as_completed(future_to_source):
                 source = future_to_source[future]
