@@ -155,11 +155,33 @@ class HappyDogsForeverMixin:
                 separator="\n", strip=True
             )
             if dog_info["detail_url"]:
-                detail_soup = self.get_page(dog_info["detail_url"])
-                if detail_soup:
-                    detail_text = detail_soup.get_text(separator="\n", strip=True)
-                    if len(detail_text) > len(dog_info["full_description"]):
-                        dog_info["full_description"] = detail_text
+                # Try cache first to avoid re-downloading
+                cached_desc = self.get_cached_description(dog_info["detail_url"])
+                cached_name = self.get_cached_name(dog_info["detail_url"])
+                if cached_desc:
+                    if cached_name:
+                        dog_info["name"] = cached_name
+                    dog_info["full_description"] = cached_desc
+                    try:
+                        self.stats_inc("happydogsforever", True)
+                    except Exception:
+                        pass
+                else:
+                    detail_soup = self.get_page(dog_info["detail_url"])
+                    if detail_soup:
+                        detail_text = detail_soup.get_text(separator="\n", strip=True)
+                        if len(detail_text) > len(dog_info["full_description"]):
+                            dog_info["full_description"] = detail_text
+                        if dog_info["full_description"]:
+                            self.set_cached_description(
+                                dog_info["detail_url"],
+                                dog_info["full_description"],
+                                name=dog_info["name"],
+                            )
+                            try:
+                                self.stats_inc("happydogsforever", False)
+                            except Exception:
+                                pass
             if dog_info["name"] != "Unknown" or dog_info["full_description"]:
                 return dog_info
             return None

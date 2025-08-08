@@ -60,23 +60,36 @@ class ChiensADonnerMixin:
                 "https://www.chiensadonner.com", title_element.get("href")
             )
             if dog_info["detail_url"]:
-                detail_soup = self.get_page(dog_info["detail_url"])
-                if detail_soup:
-                    dog_info["full_description"] = detail_soup.get_text(
-                        separator="\n", strip=True
-                    )
+                # Try cache first
+                cached_desc = self.get_cached_description(dog_info["detail_url"])
+                if cached_desc:
+                    dog_info["full_description"] = cached_desc
+                    try:
+                        self.stats_inc("chiensadonner", True)
+                    except Exception:
+                        pass
                 else:
-                    self.logger.warning(
-                        f"Could not fetch detail page for {dog_info['name']}"
-                    )
-                    dog_info["full_description"] = dog_element.get_text(
-                        separator="\n", strip=True
-                    )
+                    detail_soup = self.get_page(dog_info["detail_url"])
+                    if detail_soup:
+                        full_text = detail_soup.get_text(separator="\n", strip=True)
+                        dog_info["full_description"] = full_text
+                        self.set_cached_description(
+                            dog_info["detail_url"], full_text, name=dog_info["name"]
+                        )
+                        try:
+                            self.stats_inc("chiensadonner", False)
+                        except Exception:
+                            pass
+                    else:
+                        self.logger.warning(
+                            f"Could not fetch detail page for {dog_info['name']}"
+                        )
+                        dog_info["full_description"] = dog_element.get_text(
+                            separator="\n", strip=True
+                        )
             return dog_info
         except Exception as e:
             self.logger.warning(
                 f"Error extracting dog info from chiensadonner.com: {e}"
             )
             return None
-
-

@@ -40,24 +40,40 @@ class LarcheDeKalaMixin:
                 "scraped_date": datetime.now().isoformat(),
                 "source": "larchedekala.fr",
             }
-            detail_soup = self.get_page(dog_info["detail_url"])
-            if not detail_soup:
-                self.logger.warning(f"Could not fetch detail page for {detail_url}")
-                return None
-            name_element = detail_soup.find("h1", class_="product-page__heading")
-            if name_element:
-                dog_info["name"] = name_element.get_text(strip=True)
-            description_element = detail_soup.find(
-                "div", class_="product-page__description"
-            )
-            if description_element:
-                dog_info["full_description"] = description_element.get_text(
-                    separator="\n", strip=True
-                )
+            # Try cache first
+            cached_desc = self.get_cached_description(dog_info["detail_url"])
+            cached_name = self.get_cached_name(dog_info["detail_url"])
+            if cached_desc:
+                dog_info["name"] = cached_name or dog_info["name"]
+                dog_info["full_description"] = cached_desc
+                try:
+                    self.stats_inc("larchedekala", True)
+                except Exception:
+                    pass
             else:
-                dog_info["full_description"] = detail_soup.get_text(
-                    separator="\n", strip=True
+                detail_soup = self.get_page(dog_info["detail_url"])
+                if not detail_soup:
+                    self.logger.warning(f"Could not fetch detail page for {detail_url}")
+                    return None
+                name_element = detail_soup.find("h1", class_="product-page__heading")
+                if name_element:
+                    dog_info["name"] = name_element.get_text(strip=True)
+                description_element = detail_soup.find(
+                    "div", class_="product-page__description"
                 )
+                if description_element:
+                    full_text = description_element.get_text(separator="\n", strip=True)
+                else:
+                    full_text = detail_soup.get_text(separator="\n", strip=True)
+                dog_info["full_description"] = full_text
+                if full_text:
+                    self.set_cached_description(
+                        dog_info["detail_url"], full_text, name=dog_info["name"]
+                    )
+                    try:
+                        self.stats_inc("larchedekala", False)
+                    except Exception:
+                        pass
             return dog_info
         except Exception as e:
             self.logger.warning(f"Error extracting dog info from larchedekala.fr: {e}")

@@ -3,6 +3,9 @@ import os
 import re
 import json
 import time
+import hashlib
+import threading
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -24,6 +27,12 @@ class CoreMixin:
         self.setup_logging()
         self.data_dir = "dog_data"
         self.ensure_data_directory()
+        # Simple JSON file cache for descriptions and scores
+        self.cache_file = os.path.join(self.data_dir, "cache.json")
+        self.cache_lock = threading.Lock()
+        self.cache = self._load_cache()
+        # Stats for cache usage per source
+        self.cache_stats = {}
         self.search_regions = ["2", "3", "4", "5"]
         self.paris_departments = [
             "41",
@@ -49,6 +58,128 @@ class CoreMixin:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
             self.logger.info(f"Created data directory: {self.data_dir}")
+
+    # ---------------
+    # Cache utilities
+    # ---------------
+    def _load_cache(self) -> Dict:
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # shape: {"descriptions": {url: {"text": str, "updated_at": ts}},
+                    #         "scores": {url: {prompt_hash: {"score": int, "score_details": [str], "updated_at": ts}}}}
+                    if "descriptions" not in data:
+                        data["descriptions"] = {}
+                    if "scores" not in data:
+                        data["scores"] = {}
+                    return data
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to load cache file: {e}. A new cache will be created."
+                )
+        return {"descriptions": {}, "scores": {}}
+
+    def _save_cache(self) -> None:
+        try:
+            with self.cache_lock:
+                tmp_path = self.cache_file + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(self.cache, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self.cache_file)
+        except Exception as e:
+            self.logger.warning(f"Failed to save cache file: {e}")
+
+    def _compute_prompt_hash(self) -> str:
+        try:
+            with open("prompt.txt", "rb") as f:
+                content = f.read()
+        except FileNotFoundError:
+            # mirror default prompt template used in _generate_gemini_prompt
+            default_template = (
+                "Evaluate the dog's suitability for apartment living with a cat based *only* on the text below.\n"
+            ).encode("utf-8")
+            content = default_template
+        return hashlib.md5(content).hexdigest()
+
+    def get_cached_description(self, detail_url: str) -> str:
+        if not detail_url:
+            return ""
+        with self.cache_lock:
+            entry = self.cache.get("descriptions", {}).get(detail_url)
+            return entry.get("text", "") if entry else ""
+
+    def set_cached_description(
+        self, detail_url: str, text: str, name: Optional[str] = None
+    ) -> None:
+        if not detail_url or not text:
+            return
+        with self.cache_lock:
+            entry = {
+                "text": text,
+                "updated_at": int(time.time()),
+            }
+            if name:
+                entry["name"] = name
+            self.cache.setdefault("descriptions", {})[detail_url] = entry
+        self._save_cache()
+
+    def get_cached_name(self, detail_url: str) -> str:
+        if not detail_url:
+            return ""
+        with self.cache_lock:
+            entry = self.cache.get("descriptions", {}).get(detail_url)
+            return entry.get("name", "") if entry else ""
+
+    def get_cached_score(self, detail_url: str, prompt_hash: str) -> Optional[Dict]:
+        if not detail_url or not prompt_hash:
+            return None
+        with self.cache_lock:
+            by_url = self.cache.get("scores", {}).get(detail_url)
+            if not by_url:
+                return None
+            return by_url.get(prompt_hash)
+
+    # ---------------
+    # Cache stats utilities
+    # ---------------
+    def stats_reset(self) -> None:
+        self.cache_stats = {}
+
+    def stats_inc(self, source: str, cached: bool) -> None:
+        if not source:
+            source = "unknown"
+        entry = self.cache_stats.setdefault(source, {"cached": 0, "fetched": 0})
+        if cached:
+            entry["cached"] += 1
+        else:
+            entry["fetched"] += 1
+
+    def print_cache_stats(self) -> None:
+        if not self.cache_stats:
+            print("No cache stats available")
+            return
+        print("\nCache usage per site:")
+        for site, counts in self.cache_stats.items():
+            total = counts.get("cached", 0) + counts.get("fetched", 0)
+            print(
+                f" - {site}: total={total}, from_cache={counts.get('cached', 0)}, fetched={counts.get('fetched', 0)}"
+            )
+
+    def set_cached_score(
+        self, detail_url: str, prompt_hash: str, score: int, score_details: List[str]
+    ) -> None:
+        if not detail_url or not prompt_hash:
+            return
+        with self.cache_lock:
+            self.cache.setdefault("scores", {}).setdefault(detail_url, {})[
+                prompt_hash
+            ] = {
+                "score": int(score),
+                "score_details": list(score_details),
+                "updated_at": int(time.time()),
+            }
+        self._save_cache()
 
     def get_page(self, url: str, retries: int = 3) -> Optional[BeautifulSoup]:
         for attempt in range(retries):
@@ -114,7 +245,51 @@ class CoreMixin:
         self, dog_info: Dict, breed_analysis: Optional[str] = None
     ) -> Dict:
         try:
+            detail_url = dog_info.get("detail_url", "")
+            full_desc = dog_info.get("full_description") or self.get_cached_description(
+                detail_url
+            )
+            if full_desc:
+                # ensure cache has it for next runs
+                self.set_cached_description(detail_url, full_desc)
+            else:
+                # Try to fetch description if we have a URL
+                if detail_url:
+                    full_desc = self.get_full_description(detail_url)
+                    if full_desc:
+                        dog_info["full_description"] = full_desc
+                        self.set_cached_description(detail_url, full_desc)
+                # If still missing, skip Gemini
+                if not full_desc:
+                    self.logger.info(
+                        f"Skipping Gemini for {dog_info.get('name', 'Unknown')} due to missing description"
+                    )
+                    return {"score": -1, "score_details": ["Missing description"]}
+
+            prompt_hash = self._compute_prompt_hash()
+            cached = self.get_cached_score(detail_url, prompt_hash)
+            if cached is not None:
+                return {
+                    "score": cached["score"],
+                    "score_details": cached["score_details"],
+                }
+            # If we have a cached description but no cached score for this prompt, warn
+            try:
+                if detail_url and self.get_cached_description(detail_url):
+                    self.logger.warning(
+                        f"Cached description found for {detail_url} but no cached score for current prompt (hash={prompt_hash}). Gemini will be called."
+                    )
+            except Exception:
+                pass
+
             result = self._call_gemini_api(dog_info, breed_analysis)
+            if isinstance(result, dict) and "score" in result:
+                self.set_cached_score(
+                    detail_url,
+                    prompt_hash,
+                    result.get("score", 0),
+                    result.get("score_details", []),
+                )
             return result
         except Exception as e:
             self.logger.error(
@@ -179,6 +354,11 @@ class CoreMixin:
 
     def get_full_description(self, detail_url: str) -> str:
         try:
+            # Avoid re-downloading if already cached successfully
+            cached = self.get_cached_description(detail_url)
+            if cached:
+                return cached
+
             soup = self.get_page(detail_url)
             if not soup:
                 return ""
@@ -193,7 +373,10 @@ class CoreMixin:
                     text = p.get_text().strip()
                     if len(text) > 50:
                         full_desc += text + "\n\n"
-            return full_desc.strip()
+            full_desc = full_desc.strip()
+            if full_desc:
+                self.set_cached_description(detail_url, full_desc)
+            return full_desc
         except Exception as e:
             self.logger.warning(
                 f"Error getting full description from {detail_url}: {e}"

@@ -38,19 +38,36 @@ class CrocsMignonsMixin:
                 "scraped_date": datetime.now().isoformat(),
                 "source": "latribudescrocsmignons.com",
             }
-            detail_soup = self.get_page(dog_info["detail_url"])
-            if detail_soup:
-                title_element = detail_soup.find("title")
-                if title_element:
-                    dog_info["name"] = (
-                        title_element.get_text(strip=True).split("|")[0].strip()
-                    )
-                dog_info["full_description"] = detail_soup.get_text(
-                    separator="\n", strip=True
-                )
+            # Try cache first to avoid re-downloading
+            cached_desc = self.get_cached_description(dog_info["detail_url"])
+            cached_name = self.get_cached_name(dog_info["detail_url"])
+            if cached_desc:
+                dog_info["name"] = cached_name or dog_info["name"]
+                dog_info["full_description"] = cached_desc
+                try:
+                    self.stats_inc("crocsmignons", True)
+                except Exception:
+                    pass
             else:
-                self.logger.warning(f"Could not fetch detail page for {detail_url}")
-                return None
+                detail_soup = self.get_page(dog_info["detail_url"])
+                if detail_soup:
+                    title_element = detail_soup.find("title")
+                    if title_element:
+                        dog_info["name"] = (
+                            title_element.get_text(strip=True).split("|")[0].strip()
+                        )
+                    full_text = detail_soup.get_text(separator="\n", strip=True)
+                    dog_info["full_description"] = full_text
+                    self.set_cached_description(
+                        dog_info["detail_url"], full_text, name=dog_info["name"]
+                    )
+                    try:
+                        self.stats_inc("crocsmignons", False)
+                    except Exception:
+                        pass
+                else:
+                    self.logger.warning(f"Could not fetch detail page for {detail_url}")
+                    return None
             return dog_info
         except Exception as e:
             self.logger.warning(

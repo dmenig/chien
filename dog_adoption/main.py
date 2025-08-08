@@ -3,14 +3,30 @@ from typing import Dict, List
 
 import schedule
 
-from .core import CoreMixin
-from .secondechance import SecondeChanceMixin
-from .chiensadonner import ChiensADonnerMixin
-from .crocsmignons import CrocsMignonsMixin
-from .happydogsforever import HappyDogsForeverMixin
-from .rememberme import RememberMeMixin
-from .larchedekala import LarcheDeKalaMixin
-from .happytogether import HappyTogetherMixin
+# Support both package execution (python -m dog_adoption.main) and direct script
+# execution (python dog_adoption/main.py) by providing import fallbacks.
+try:  # Package context
+    from .core import CoreMixin
+    from .secondechance import SecondeChanceMixin
+    from .chiensadonner import ChiensADonnerMixin
+    from .crocsmignons import CrocsMignonsMixin
+    from .happydogsforever import HappyDogsForeverMixin
+    from .rememberme import RememberMeMixin
+    from .larchedekala import LarcheDeKalaMixin
+    from .happytogether import HappyTogetherMixin
+except ImportError:  # Direct script context
+    import os
+    import sys
+
+    sys.path.append(os.path.dirname(__file__))
+    from core import CoreMixin
+    from secondechance import SecondeChanceMixin
+    from chiensadonner import ChiensADonnerMixin
+    from crocsmignons import CrocsMignonsMixin
+    from happydogsforever import HappyDogsForeverMixin
+    from rememberme import RememberMeMixin
+    from larchedekala import LarcheDeKalaMixin
+    from happytogether import HappyTogetherMixin
 
 
 class DogAdoptionBot(
@@ -36,6 +52,7 @@ class DogAdoptionBot(
                 executor.submit(self.scrape_larchedekala): "larchedekala",
                 executor.submit(self.scrape_rememberme): "rememberme",
                 executor.submit(self.scrape_happydogsforever): "happydogsforever",
+                executor.submit(self.scrape_happytogether): "happytogether",
             }
             for future in as_completed(future_to_source):
                 source = future_to_source[future]
@@ -92,7 +109,7 @@ class DogAdoptionBot(
             print(f"\n🐕 FOUND {len(dogs)} DOGS IN PARIS REGION")
             print("📊 Ranked by apartment suitability & cat compatibility:")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            excellent_dogs = [dog for dog in dogs if dog.get("score", 0) >= 80]
+            excellent_dogs = [dog for dog in dogs if dog.get("score", 0) >= 50][:20]
             if not excellent_dogs:
                 print("\nNo dogs scored 80 or higher in this run.")
             for i, dog in enumerate(excellent_dogs, 1):
@@ -108,6 +125,11 @@ class DogAdoptionBot(
             print("\n⚠️  No dogs found")
             print("💡 Try checking the site manually or expand search to other regions")
         self.logger.info("Daily scraping job completed")
+        # Print cache stats collected during scraping
+        try:
+            self.print_cache_stats()
+        except Exception:
+            pass
 
 
 def main():
@@ -115,3 +137,7 @@ def main():
     bot.run_daily_scrape()
     # Uncomment to start daily scheduler
     # bot.start_scheduler()
+
+
+if __name__ == "__main__":
+    main()

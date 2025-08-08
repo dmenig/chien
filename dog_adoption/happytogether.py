@@ -31,9 +31,8 @@ class HappyTogetherMixin:
         )
         return all_dogs
 
-    def get_page_with_selenium(self, url):
-        # Delegate to CoreMixin centralized selenium renderer
-        return self.get_page_with_selenium(url)
+    # NOTE: Do not override the selenium renderer from CoreMixin here to avoid recursion.
+    # Use CoreMixin.get_page_with_selenium directly via method resolution order.
 
     def get_forum_topics_happytogether(self, forum_url):
         try:
@@ -68,6 +67,28 @@ class HappyTogetherMixin:
 
     def get_topic_details_happytogether(self, topic_url):
         try:
+            # Use cached description if available to avoid re-rendering via Selenium
+            cached_desc = self.get_cached_description(topic_url)
+            if cached_desc:
+                try:
+                    self.stats_inc("happytogether", True)
+                except Exception:
+                    pass
+                soup = BeautifulSoup("", "html.parser")
+                title = "Unknown"
+                dog_info = {
+                    "name": self.extract_dog_name_happytogether(title, cached_desc),
+                    "breed": self.extract_breed_happytogether(cached_desc),
+                    "age": self.extract_age_happytogether(cached_desc),
+                    "gender": self.extract_gender_happytogether(cached_desc),
+                    "size": self.extract_size_happytogether(cached_desc),
+                    "description": cached_desc[:1000],
+                    "full_description": cached_desc,
+                    "detail_url": topic_url,
+                    "scraped_date": datetime.now().isoformat(),
+                }
+                return dog_info
+
             html_content = self.get_page_with_selenium(topic_url)
             soup = BeautifulSoup(html_content, "html.parser")
             title_elem = soup.select_one("h1.page-title, h1.topic-title, h1")
@@ -89,6 +110,14 @@ class HappyTogetherMixin:
                 "detail_url": topic_url,
                 "scraped_date": datetime.now().isoformat(),
             }
+            if full_description:
+                self.set_cached_description(
+                    topic_url, full_description, name=dog_info["name"]
+                )
+                try:
+                    self.stats_inc("happytogether", False)
+                except Exception:
+                    pass
             return dog_info
         except Exception as e:
             self.logger.error(f"Error getting topic details: {e}")

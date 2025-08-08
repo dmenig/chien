@@ -96,12 +96,34 @@ class SecondeChanceMixin:
             dog_links.append(href)
         self.logger.info(f"Found {len(dog_links)} potential dog pages")
         for dog_url in dog_links:
+            # First consult cache to avoid re-downloading
+            cached_desc = self.get_cached_description(dog_url)
+            cached_name = self.get_cached_name(dog_url)
+            if cached_desc:
+                dogs.append(
+                    {
+                        "name": cached_name or "Unknown",
+                        "full_description": cached_desc,
+                        "detail_url": dog_url,
+                    }
+                )
+                # record cache hit
+                try:
+                    self.stats_inc("secondechance", True)
+                except Exception:
+                    pass
+                continue
             dog_soup = self.get_page(dog_url)
             if not dog_soup:
                 continue
             title = dog_soup.find("title")
             name = title.get_text().strip() if title else "Unknown"
             content = dog_soup.get_text()
+            self.set_cached_description(dog_url, content, name=name)
+            try:
+                self.stats_inc("secondechance", False)
+            except Exception:
+                pass
             dog_info = {
                 "name": name.split("-")[0].strip() if "-" in name else name,
                 "full_description": content,
@@ -119,9 +141,23 @@ class SecondeChanceMixin:
                     dog_info = self.extract_dog_info(element)
                     if dog_info["name"]:
                         if dog_info["detail_url"]:
-                            dog_info["full_description"] = self.get_full_description(
-                                dog_info["detail_url"]
-                            )
+                            cached = self.get_cached_description(dog_info["detail_url"])
+                            if cached:
+                                dog_info["full_description"] = cached
+                                try:
+                                    self.stats_inc("secondechance", True)
+                                except Exception:
+                                    pass
+                            else:
+                                full_desc = self.get_full_description(
+                                    dog_info["detail_url"]
+                                )
+                                if full_desc:
+                                    dog_info["full_description"] = full_desc
+                                    try:
+                                        self.stats_inc("secondechance", False)
+                                    except Exception:
+                                        pass
                         dogs.append(dog_info)
         self.logger.info(f"Scraped {len(dogs)} dogs from {url}")
         return dogs, soup
