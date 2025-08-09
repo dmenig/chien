@@ -5,10 +5,11 @@ import json
 import time
 import hashlib
 import threading
-from collections import defaultdict
+
+# collections.defaultdict removed (unused)
 from datetime import datetime
 from typing import Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
@@ -223,7 +224,7 @@ class CoreMixin:
             description = description[:1500]
             breed_text = ""
             if breed_analysis:
-                breed_text = f"An AI image analysis suggests the following about the breed: '{breed_analysis}'. Please take this into account."
+            breed_text = f"An AI analysis suggests the following about the breed: '{breed_analysis}'. Please take this into account."
             return f"""
             Evaluate the dog's suitability for apartment living with a cat based *only* on the text below.
             Description: {description}
@@ -397,64 +398,7 @@ class CoreMixin:
             next_elem = next_elem.find_next_sibling()
         return text_accum
 
-    def get_dog_image_url(self, detail_url: str) -> Optional[str]:
-        if not detail_url:
-            return None
-        try:
-            soup = self.get_page(detail_url)
-            if not soup:
-                return None
-            og_image = soup.find("meta", property="og:image")
-            if og_image and og_image.get("content"):
-                image_url = urljoin(detail_url, og_image["content"])
-                self.logger.info(f"Found image via og:image tag: {image_url}")
-                return image_url
-            parsed_url = urlparse(detail_url)
-            if "secondechance.org" in parsed_url.netloc:
-                slider_img = soup.select_one(".splide__slide img")
-                if slider_img and slider_img.get("src"):
-                    image_url = urljoin(detail_url, slider_img["src"])
-                    self.logger.info(f"Found secondechance image: {image_url}")
-                    return image_url
-            if "chiensadonner.com" in parsed_url.netloc:
-                main_img = soup.select_one(".single-ad-main-image img")
-                if main_img and main_img.get("src"):
-                    image_url = urljoin(detail_url, main_img["src"])
-                    self.logger.info(f"Found chiensadonner image: {image_url}")
-                    return image_url
-            largest_image = self._find_largest_image(soup)
-            if largest_image:
-                image_url = urljoin(detail_url, largest_image)
-                self.logger.info(f"Found largest image via fallback: {image_url}")
-                return image_url
-            self.logger.warning(f"Could not find a suitable image on {detail_url}")
-            return None
-        except Exception as e:
-            self.logger.warning(f"Error scraping image from {detail_url}: {e}")
-            return None
-
-    def _find_largest_image(self, soup):
-        largest_image = None
-        max_area = 0
-        for img in soup.find_all("img"):
-            src = img.get("src")
-            if (
-                not src
-                or "logo" in src.lower()
-                or "icon" in src.lower()
-                or ".svg" in src.lower()
-            ):
-                continue
-            try:
-                width = int(img.get("width", 0))
-                height = int(img.get("height", 0))
-                area = width * height
-                if area > max_area:
-                    max_area = area
-                    largest_image = src
-            except (ValueError, TypeError):
-                continue
-        return largest_image
+    # Media-related scraping has been disabled per project configuration.
 
     def get_page_with_selenium(self, url: str) -> str:
         """Render a page using Selenium and return page source (keeps previous behavior)."""

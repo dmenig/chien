@@ -106,7 +106,7 @@ class ReseauAdoptionMixin:
                 "name": "Unknown",
                 "detail_url": "",
                 "full_description": "",
-                "image_url": None,
+                # image_url removed
                 "scraped_date": datetime.now().isoformat(),
                 "source": "reseau-adoption.fr",
             }
@@ -206,13 +206,7 @@ class ReseauAdoptionMixin:
                         if len(best_desc) > len(dog_info["full_description"]):
                             dog_info["full_description"] = best_desc
 
-                        # Try to find image URL for the dog
-                        try:
-                            img_url = self.get_dog_image_url(dog_info["detail_url"])
-                            if img_url:
-                                dog_info["image_url"] = img_url
-                        except Exception:
-                            pass
+                        # Media handling disabled
 
                         if dog_info["full_description"]:
                             self.set_cached_description(

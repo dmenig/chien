@@ -146,7 +146,7 @@ class BrigitteBardotMixin:
                     )
 
             # Try cache first for detail URL; we'll still fetch detail page to get
-            # richer description and image if needed.
+            # richer description and media if needed.
             if dog_info["detail_url"]:
                 cached_desc = self.get_cached_description(dog_info["detail_url"])
                 cached_name = self.get_cached_name(dog_info["detail_url"])
@@ -159,7 +159,7 @@ class BrigitteBardotMixin:
                     except Exception:
                         pass
 
-                # Fetch the detail page to get the full description & image
+                # Fetch the detail page to get the full description
                 detail_soup = (
                     self.get_page(dog_info["detail_url"])
                     if dog_info["detail_url"]
@@ -212,13 +212,7 @@ class BrigitteBardotMixin:
                         except Exception:
                             pass
 
-                    # Image: use existing helper
-                    try:
-                        img = self.get_dog_image_url(dog_info["detail_url"])
-                        if img:
-                            dog_info["image_url"] = img
-                    except Exception:
-                        pass
+                    # Media handling disabled
 
             # If still missing a full description, fallback to element text
             if not dog_info.get("full_description"):

@@ -127,8 +127,7 @@ class DogAdoptionBot(
                 print(f"\n{i}. {name} - {score_indicator} ({score}/100)")
                 print(f"   Score breakdown: {', '.join(dog.get('score_details', []))}")
                 print(f"   🔗 {dog.get('detail_url', 'No URL')}")
-                if dog.get("image_url"):
-                    print(f"   🖼️ Image: {dog['image_url']}")
+                # Image URLs are not displayed
         else:
             print("\n⚠️  No dogs found")
             print("💡 Try checking the site manually or expand search to other regions")
